@@ -2,6 +2,12 @@ name: Vérifier le stock PortaSplit
 
 on:
   workflow_dispatch:
+    inputs:
+      test_notification:
+        description: "Envoyer une notification de test"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "*/5 * * * *"
 
@@ -48,6 +54,7 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_SERVER: https://ntfy.sh
+          TEST_NOTIFICATION: ${{ inputs.test_notification || 'false' }}
         run: python monitor.py
 
       - name: Sauvegarder le nouvel état
