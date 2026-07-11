@@ -1,0 +1,82 @@
+{
+  "max_price_eur": 1050,
+  "sites": [
+    {
+      "key": "manomano",
+      "name": "ManoMano",
+      "url": "https://www.manomano.fr/p/midea-climatiseur-split-mobile-reversible-froid-chaud-3500w12000btu-wifi-deshumidificateur-ventilateur-jusqua-40m2-kit-fenetre-inclus-83810402",
+      "type": "product",
+      "wait_ms": 5000
+    },
+    {
+      "key": "optimea_neuf",
+      "name": "Optimea — neuf",
+      "url": "https://www.optimea.fr/product/climatiseur-split-mobile-midea/",
+      "type": "optimea",
+      "wait_ms": 4000
+    },
+    {
+      "key": "optimea_destockage",
+      "name": "Optimea — déstockage",
+      "url": "https://www.optimea.fr/product/destockage-climatiseur-split-mobile-midea-silencieux-reversible-sans-installation/",
+      "type": "optimea",
+      "wait_ms": 4000
+    },
+    {
+      "key": "optimea_seconde_vie",
+      "name": "Optimea — seconde vie",
+      "url": "https://www.optimea.fr/product/seconde-vie-climatiseur-split-mobile-midea-silencieux-reversible-sans-installation/",
+      "type": "optimea",
+      "wait_ms": 4000
+    },
+    {
+      "key": "optimea_category",
+      "name": "Optimea — catégorie PortaSplit",
+      "url": "https://www.optimea.fr/product-category/climatiseurs-mobiles-split/",
+      "type": "category",
+      "wait_ms": 4000
+    },
+    {
+      "key": "boulanger",
+      "name": "Boulanger",
+      "url": "https://www.boulanger.com/ref/1216685",
+      "type": "product",
+      "wait_ms": 5500
+    },
+    {
+      "key": "leroymerlin",
+      "name": "Leroy Merlin",
+      "url": "https://www.leroymerlin.fr/produits/climatiseur-split-mobile-reversible-portasplit-midea-par-optimea-93857579.html",
+      "type": "local_stock",
+      "wait_ms": 5500
+    },
+    {
+      "key": "castorama",
+      "name": "Castorama",
+      "url": "https://www.castorama.fr/climatiseur-portasplit-midea-reversible-3500w/8431312260509_CAFR.prd",
+      "type": "local_stock",
+      "wait_ms": 5500
+    },
+    {
+      "key": "amazon",
+      "name": "Amazon France",
+      "url": "https://www.amazon.fr/Climatiseur-Climatisation-rafra%C3%AEchisseur-d%C3%A9shumidificateur-ventilateur/dp/B0CY2YW8BT",
+      "type": "amazon",
+      "wait_ms": 5000
+    },
+    {
+      "key": "darty",
+      "name": "Darty",
+      "url": "https://www.darty.com/nav/achat/gros_electromenager/chauffage_climatisation/climatiseur/avis_1__midea_mmcs-12hrn8-qrd0.html",
+      "type": "product",
+      "wait_ms": 5000
+    },
+    {
+      "key": "bricorama",
+      "name": "Bricorama",
+      "url": "https://www.bricorama.fr/search?q=portasplit",
+      "type": "search",
+      "wait_ms": 5000
+    }
+  ]
+}
