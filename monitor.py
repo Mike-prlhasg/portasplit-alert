@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import os
 import re
@@ -16,15 +15,15 @@ from typing import Any
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 ROOT = Path(__file__).resolve().parent
-CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+CONFIG_PATH = ROOT / "config.json"
 STATE_PATH = ROOT / "state.json"
 RESULTS_PATH = ROOT / "latest-results.json"
-DASHBOARD_PATH = ROOT / "docs" / "index.html"
 
 AVAILABLE = "DISPONIBLE"
 CHECK = "À VÉRIFIER"
 UNAVAILABLE = "INDISPONIBLE"
 ERROR = "ERREUR"
+
 
 @dataclass
 class Result:
@@ -33,127 +32,159 @@ class Result:
     url: str
     status: str
     reason: str
-    price: float | None
-    seller: str | None
+    price: str | None
     checked_at: str
 
 
-def norm(text: str) -> str:
-    return re.sub(r"\s+", " ", text.lower().replace("\xa0", " ")).strip()
+def normalize(value: str) -> str:
+    value = value.lower().replace("\xa0", " ")
+    return re.sub(r"\s+", " ", value).strip()
 
 
-def prices(text: str) -> list[float]:
-    found: list[float] = []
-    for raw in re.findall(r"(?<!\d)(\d{2,4}(?:[.,]\d{1,2})?)\s*€", text):
+def extract_price(text: str) -> str | None:
+    values: list[float] = []
+    for raw in re.findall(r"(\d{2,4}(?:[.,]\d{1,2})?)\s*€", text):
         try:
-            value = float(raw.replace(",", "."))
-            if 500 <= value <= 2000:
-                found.append(value)
+            amount = float(raw.replace(",", "."))
+            if 500 <= amount <= 1800:
+                values.append(amount)
         except ValueError:
             pass
-    return sorted(set(found))
+    if not values:
+        return None
+    amount = min(values)
+    return (f"{amount:.2f} €").replace(".00 €", " €").replace(".", ",")
 
 
-def first_price(text: str) -> float | None:
-    values = prices(text)
-    return values[0] if values else None
+def contains_any(text: str, terms: list[str]) -> list[str]:
+    return [term for term in terms if normalize(term) in text]
 
 
-def classify(site: dict[str, Any], raw: str) -> tuple[str, str, float | None, str | None]:
-    text = norm(raw)
-    price = first_price(raw)
-    max_price = float(CONFIG.get("max_price_eur", 1050))
+def classify(site: dict[str, Any], raw_text: str) -> tuple[str, str]:
+    text = normalize(raw_text)
     key = site["key"]
-    seller = None
+
+    negatives = contains_any(text, site.get("negative_terms", []))
+    positives = contains_any(text, site.get("positive_terms", []))
+    checks = contains_any(text, site.get("check_terms", []))
 
     if key == "manomano":
         if "produit épuisé" in text or "produit epuise" in text:
-            return UNAVAILABLE, "La fiche affiche Produit épuisé", price, None
-        if "ajouter au panier" in text and price and price <= max_price:
-            return AVAILABLE, "Panier détecté à un prix acceptable", price, None
-        if "ajouter au panier" in text:
-            return CHECK, "Panier détecté, mais prix à vérifier", price, None
-        return UNAVAILABLE, "Aucune offre commandable détectée", price, None
+            return UNAVAILABLE, "La fiche affiche « Produit épuisé »"
+        if "ajouter au panier" in text and not negatives:
+            return AVAILABLE, "Le produit n’est plus marqué épuisé et le panier est proposé"
+        return UNAVAILABLE, "Aucune commande ManoMano détectée"
 
-    if key.startswith("optimea_") and key != "optimea_category":
+    if key.startswith("optimea_"):
         if "rupture de stock" in text or "indisponible" in text:
-            return UNAVAILABLE, "Optimea affiche une rupture de stock", price, "Optimea"
-        if "ajouter au panier" in text and (price is None or price <= max_price):
-            return AVAILABLE, "Bouton Ajouter au panier détecté", price, "Optimea"
-        return CHECK, "La fiche Optimea a changé, vérification manuelle conseillée", price, "Optimea"
-
-    if key == "optimea_category":
-        # Cette page sert de filet de sécurité si une nouvelle fiche apparaît.
-        if "ajouter au panier" in text and "portasplit" in text:
-            return CHECK, "La catégorie PortaSplit contient un bouton panier", price, "Optimea"
-        return UNAVAILABLE, "Aucun panier PortaSplit détecté dans la catégorie", price, "Optimea"
-
-    if key == "boulanger":
-        negatives = ["produit indisponible", "retrait indisponible", "livraison indisponible"]
-        if any(x in text for x in negatives):
-            return UNAVAILABLE, "Boulanger indique une indisponibilité", price, "Boulanger"
-        if "ajouter au panier" in text and (price is None or price <= max_price):
-            return AVAILABLE, "Bouton Ajouter au panier détecté", price, "Boulanger"
-        if "retrait magasin" in text or "livraison à domicile" in text:
-            return CHECK, "Un mode d’obtention est apparu", price, "Boulanger"
-        return UNAVAILABLE, "Aucun signal de commande détecté", price, "Boulanger"
-
-    if key == "leroymerlin":
-        if "ce produit n'est plus vendu" in text or "rupture de stock" in text:
-            return UNAVAILABLE, "Leroy Merlin indique une indisponibilité", price, "Leroy Merlin"
+            return UNAVAILABLE, "Optimea affiche une rupture ou une indisponibilité"
         if "ajouter au panier" in text:
-            return CHECK, "Panier détecté : vérifier le code postal 75000", price, "Leroy Merlin"
-        if "sur commande aujourd'hui" in text:
-            return CHECK, "Mention Sur commande aujourd’hui détectée", price, "Leroy Merlin"
-        return UNAVAILABLE, "Aucun bouton de commande détecté", price, "Leroy Merlin"
-
-    if key == "castorama":
-        if any(x in text for x in ["rupture de stock", "non disponible", "indisponible"]):
-            return UNAVAILABLE, "Castorama indique une indisponibilité", price, "Castorama"
-        if "ajouter au panier" in text:
-            return CHECK, "Panier détecté : vérifier magasin et livraison Paris", price, "Castorama"
-        return UNAVAILABLE, "Aucun panier détecté", price, "Castorama"
+            return AVAILABLE, "Optimea affiche un bouton panier"
+        if "en stock" in text and "plus que" in text:
+            return AVAILABLE, "Optimea affiche une quantité en stock"
+        return UNAVAILABLE, "Aucun signal de commande Optimea détecté"
 
     if key == "amazon":
-        if any(x in text for x in [
+        if any(term in text for term in [
             "actuellement indisponible",
             "aucune offre en vedette disponible",
             "nous ne savons pas quand cet article sera de nouveau approvisionné",
         ]):
-            return UNAVAILABLE, "Amazon n’affiche aucune offre commandable", price, None
-        seller_match = re.search(r"vendu par\s+([^\n]+)", raw, re.I)
-        seller = seller_match.group(1).strip()[:80] if seller_match else None
+            return UNAVAILABLE, "Amazon n’affiche aucune offre commandable"
         if "ajouter au panier" in text or "acheter maintenant" in text:
-            if price and price > max_price:
-                return CHECK, f"Offre détectée mais prix supérieur à {max_price:.0f} €", price, seller
-            return CHECK, "Offre Amazon détectée : vérifier vendeur et livraison", price, seller
-        return UNAVAILABLE, "Aucune offre Amazon commandable détectée", price, seller
+            return CHECK, "Une offre Amazon semble commandable : vérifie le vendeur et le prix"
+        return UNAVAILABLE, "Aucune offre Amazon commandable détectée"
 
     if key == "darty":
-        if "produit indisponible" in text or "livraison indisponible" in text:
-            return UNAVAILABLE, "Darty indique une indisponibilité", price, "Darty"
+        if "produit indisponible" in text or "indisponible" in text:
+            return UNAVAILABLE, "Darty affiche une indisponibilité"
         if "ajouter au panier" in text or "disponible en livraison" in text:
-            return AVAILABLE, "Signal de commande Darty détecté", price, "Darty"
-        return UNAVAILABLE, "Aucun signal de commande détecté", price, "Darty"
+            return AVAILABLE, "Darty affiche un signal de commande"
+        return UNAVAILABLE, "Aucune commande Darty détectée"
+
+    if key == "castorama":
+        # Le texte du bouton reste dans la page même quand il est grisé.
+        # Les messages suivants signifient que la commande n'est pas ouverte.
+        if any(term in text for term in [
+            "vérifiez sa disponibilité auprès de votre magasin",
+            "verifiez sa disponibilite aupres de votre magasin",
+            "ce produit rencontre un grand succès",
+            "ce produit rencontre un grand succes",
+            "indisponible",
+            "rupture de stock",
+            "non disponible",
+        ]):
+            return UNAVAILABLE, "Castorama demande de vérifier le magasin et le bouton panier est désactivé"
+        if "ajouter au panier" in text:
+            return CHECK, "Panier Castorama potentiellement actif : vérifie livraison et retrait"
+        return UNAVAILABLE, "Aucune commande Castorama détectée"
+
+    if key == "leroymerlin":
+        if negatives:
+            return UNAVAILABLE, f"Signal négatif : {negatives[0]}"
+        if "ajouter au panier" in text or "livraison à domicile" in text:
+            return CHECK, "Commande ou livraison potentielle détectée : vérifie ton code postal"
+        if "sur commande aujourd'hui" in text:
+            return CHECK, "Mention « Sur commande aujourd’hui » détectée"
+        return UNAVAILABLE, "Aucune commande Leroy Merlin détectée"
+
+    if key == "boulanger":
+        if negatives:
+            return UNAVAILABLE, f"Signal négatif : {negatives[0]}"
+        if "ajouter au panier" in text:
+            return AVAILABLE, "Bouton « Ajouter au panier » détecté"
+        if "retrait magasin disponible" in text or "livraison à domicile" in text:
+            return CHECK, "Disponibilité potentielle détectée"
+        return UNAVAILABLE, "Aucune commande Boulanger détectée"
 
     if key == "bricorama":
-        product = "portasplit" in text or "mmcs-12hrn8-qrd0" in text
-        if product and ("ajouter au panier" in text or "disponible" in text):
-            return CHECK, "Une offre PortaSplit semble apparaître", price, "Bricorama"
-        if product:
-            return CHECK, "Une fiche PortaSplit est apparue dans la recherche", price, "Bricorama"
-        return UNAVAILABLE, "Aucun PortaSplit dans les résultats", price, "Bricorama"
+        # Ne jamais se baser sur le mot "portasplit" seul :
+        # il apparaît forcément dans le champ de recherche et le titre de la page.
+        if any(term in text for term in [
+            "nous n'avons pas trouvé de résultat",
+            "nous n’avons pas trouvé de résultat",
+            "aucun résultat",
+            "aucun produit",
+        ]):
+            return UNAVAILABLE, "Bricorama ne trouve aucun produit correspondant"
 
-    return ERROR, "Règle inconnue", price, seller
+        # Exige des indices d'une vraie carte produit.
+        has_model = "mmcs-12hrn8-qrd0" in text or "climatiseur portasplit midea" in text
+        has_commercial_signal = any(term in text for term in [
+            "ajouter au panier",
+            "vendu et expédié par",
+            "vendu et expedie par",
+            "retrait magasin",
+            "livraison",
+        ])
+        if has_model and has_commercial_signal:
+            return CHECK, "Une vraie fiche produit PortaSplit semble apparaître chez Bricorama"
+        return UNAVAILABLE, "Aucune vraie fiche produit PortaSplit détectée chez Bricorama"
+
+    if negatives:
+        return UNAVAILABLE, f"Signal négatif : {negatives[0]}"
+    if positives:
+        return AVAILABLE, f"Signal positif : {positives[0]}"
+    if checks:
+        return CHECK, f"Changement à vérifier : {checks[0]}"
+    return UNAVAILABLE, "Aucun signal de commande détecté"
 
 
 async def dismiss_cookies(page) -> None:
-    for label in ["Tout accepter", "Accepter tout", "J’accepte", "J'accepte", "Accepter", "Autoriser tous les cookies"]:
+    labels = [
+        r"Tout accepter",
+        r"Accepter tout",
+        r"J.?accepte",
+        r"Accepter",
+        r"Continuer sans accepter",
+        r"Autoriser tous les cookies",
+    ]
+    for label in labels:
         try:
-            button = page.get_by_role("button", name=re.compile(label, re.I))
-            if await button.count():
-                await button.first.click(timeout=1200)
-                await page.wait_for_timeout(400)
+            locator = page.get_by_role("button", name=re.compile(label, re.I))
+            if await locator.count():
+                await locator.first.click(timeout=1200)
+                await page.wait_for_timeout(500)
                 return
         except Exception:
             pass
@@ -166,95 +197,120 @@ async def inspect(context, site: dict[str, Any]) -> Result:
         await page.goto(site["url"], wait_until="domcontentloaded", timeout=50_000)
         await page.wait_for_timeout(site.get("wait_ms", 4500))
         await dismiss_cookies(page)
-        await page.wait_for_timeout(500)
-        raw = await page.locator("body").inner_text(timeout=20_000)
-        status, reason, price, seller = classify(site, raw)
-        return Result(site["key"], site["name"], site["url"], status, reason, price, seller, now)
+        await page.wait_for_timeout(700)
+        text = await page.locator("body").inner_text(timeout=20_000)
+        status, reason = classify(site, text)
+        return Result(
+            key=site["key"],
+            name=site["name"],
+            url=site["url"],
+            status=status,
+            reason=reason,
+            price=extract_price(text),
+            checked_at=now,
+        )
     except PlaywrightTimeoutError:
-        return Result(site["key"], site["name"], site["url"], ERROR, "Délai de chargement dépassé", None, None, now)
+        return Result(
+            site["key"], site["name"], site["url"], ERROR,
+            "Le chargement a dépassé le délai", None, now
+        )
     except Exception as exc:
-        return Result(site["key"], site["name"], site["url"], ERROR, f"{type(exc).__name__}: {exc}", None, None, now)
+        return Result(
+            site["key"], site["name"], site["url"], ERROR,
+            f"{type(exc).__name__}: {exc}", None, now
+        )
     finally:
         await page.close()
 
 
-def load_state() -> dict[str, Any]:
+def load_json(path: Path, default: Any) -> Any:
     try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return default
 
 
-def notify(result: Result) -> None:
-    topic = os.getenv("NTFY_TOPIC", "").strip()
-    if not topic:
-        print("NTFY_TOPIC absent : notification ignorée")
-        return
+def save_json(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def post_ntfy(topic: str, result: Result) -> None:
     server = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-    price = f"\nPrix détecté : {result.price:.2f} €" if result.price else ""
-    seller = f"\nVendeur détecté : {result.seller}" if result.seller else ""
-    body = f"{result.reason}{price}{seller}\nOuvre la fiche immédiatement et vérifie la livraison à Paris."
+    title = f"PortaSplit : {result.status} chez {result.name}"
+    price = f"\nPrix détecté : {result.price}" if result.price else ""
+    body = (
+        f"{result.reason}{price}\n"
+        "Ouvre la fiche et vérifie immédiatement la livraison ou le retrait à Paris."
+    )
+    headers = {
+        "Title": title,
+        "Priority": "urgent",
+        "Tags": "rotating_light,snowflake",
+        "Click": result.url,
+    }
     request = urllib.request.Request(
         f"{server}/{urllib.parse.quote(topic)}",
         data=body.encode("utf-8"),
-        headers={
-            "Title": f"PortaSplit : {result.status} chez {result.name}",
-            "Priority": "urgent",
-            "Tags": "rotating_light,snowflake",
-            "Click": result.url,
-        },
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=20) as response:
         response.read()
 
 
-def make_dashboard(results: list[Result]) -> None:
-    status_class = {AVAILABLE: "ok", CHECK: "warn", UNAVAILABLE: "no", ERROR: "err"}
-    cards = []
-    for r in results:
-        price = f"{r.price:.2f} €" if r.price else "—"
-        seller = html.escape(r.seller or "—")
-        cards.append(f'''<article class="card {status_class[r.status]}">
-<h2>{html.escape(r.name)}</h2><div class="status">{html.escape(r.status)}</div>
-<p>{html.escape(r.reason)}</p><dl><dt>Prix</dt><dd>{price}</dd><dt>Vendeur</dt><dd>{seller}</dd></dl>
-<a href="{html.escape(r.url)}" target="_blank" rel="noopener">Ouvrir la fiche</a>
-</article>''')
-    updated = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
-    DASHBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DASHBOARD_PATH.write_text(f'''<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Stock PortaSplit</title><style>
-body{{font-family:system-ui;margin:0;background:#f5f6f8;color:#111}}header{{padding:24px;max-width:1100px;margin:auto}}main{{max-width:1100px;margin:auto;padding:0 24px 40px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}}.card{{background:white;border-radius:16px;padding:18px;border-left:8px solid #999;box-shadow:0 2px 10px #0001}}.ok{{border-color:#19a15f}}.warn{{border-color:#e39a18}}.no{{border-color:#b6bcc5}}.err{{border-color:#d33}}.status{{font-weight:800;margin:8px 0}}dl{{display:grid;grid-template-columns:auto 1fr;gap:6px 12px}}dt{{font-weight:700}}a{{display:inline-block;margin-top:12px;padding:10px 14px;border-radius:10px;background:#111;color:#fff;text-decoration:none}}</style>
-<header><h1>Surveillance Midea PortaSplit</h1><p>Dernière mise à jour : {updated}. Une mention « À vérifier » demande une validation manuelle du code postal, du vendeur ou du prix.</p></header><main>{''.join(cards)}</main></html>''', encoding="utf-8")
-
-
 async def main() -> None:
-    state = load_state()
+    config = load_json(CONFIG_PATH, {})
+    state = load_json(STATE_PATH, {})
+    topic = os.getenv("NTFY_TOPIC", "").strip()
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context(locale="fr-FR", timezone_id="Europe/Paris", viewport={"width": 1440, "height": 1000}, user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36")
-        results = []
-        for site in CONFIG["sites"]:
-            result = await inspect(context, site)
-            results.append(result)
-            print(f"{result.name}: {result.status} — {result.reason}")
+        context = await browser.new_context(
+            locale="fr-FR",
+            timezone_id="Europe/Paris",
+            viewport={"width": 1440, "height": 1000},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0.0.0 Safari/537.36"
+            ),
+        )
+        results: list[Result] = []
+        for site in config["sites"]:
+            if site.get("enabled", True):
+                result = await inspect(context, site)
+                results.append(result)
+                suffix = f" — {result.price}" if result.price else ""
+                print(f"{result.name}: {result.status}{suffix} — {result.reason}")
         await browser.close()
 
-    for r in results:
-        previous = state.get(r.key, {})
+    for result in results:
+        previous = state.get(result.key, {})
         previous_status = previous.get("status")
-        if r.status in {AVAILABLE, CHECK} and r.status != previous_status:
-            try:
-                notify(r)
-                print(f"Notification envoyée : {r.name}")
-            except Exception as exc:
-                print(f"Échec notification {r.name}: {exc}")
-        if r.status != ERROR or r.key not in state:
-            state[r.key] = asdict(r)
 
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    RESULTS_PATH.write_text(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2), encoding="utf-8")
-    make_dashboard(results)
+        should_alert = (
+            result.status in {AVAILABLE, CHECK}
+            and result.status != previous_status
+        )
+
+        if should_alert:
+            if topic:
+                try:
+                    post_ntfy(topic, result)
+                    print(f"Notification envoyée pour {result.name}")
+                except Exception as exc:
+                    print(f"Échec notification {result.name}: {exc}")
+            else:
+                print("NTFY_TOPIC absent : aucune notification envoyée")
+
+        if result.status != ERROR:
+            state[result.key] = asdict(result)
+        elif result.key not in state:
+            state[result.key] = asdict(result)
+
+    save_json(STATE_PATH, state)
+    save_json(RESULTS_PATH, [asdict(r) for r in results])
+
 
 if __name__ == "__main__":
     asyncio.run(main())
