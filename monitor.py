@@ -258,10 +258,41 @@ def post_ntfy(topic: str, result: Result) -> None:
         response.read()
 
 
+def send_test_notification(topic: str) -> None:
+    server = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    url = "https://www.boulanger.com/ref/1216685"
+    body = (
+        "Ceci est un test. Le système de notification fonctionne.\n"
+        "Aucun stock réel n’a été détecté."
+    )
+    headers = {
+        "Title": "TEST PortaSplit - notification OK",
+        "Priority": "high",
+        "Tags": "white_check_mark,snowflake",
+        "Click": url,
+    }
+    request = urllib.request.Request(
+        f"{server}/{urllib.parse.quote(topic)}",
+        data=body.encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        response.read()
+
+
 async def main() -> None:
     config = load_json(CONFIG_PATH, {})
     state = load_json(STATE_PATH, {})
     topic = os.getenv("NTFY_TOPIC", "").strip()
+
+    test_notification = os.getenv("TEST_NOTIFICATION", "false").lower() == "true"
+    if test_notification:
+        if not topic:
+            raise RuntimeError("Le secret NTFY_TOPIC est absent")
+        send_test_notification(topic)
+        print("Notification de test envoyée")
+        return
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
