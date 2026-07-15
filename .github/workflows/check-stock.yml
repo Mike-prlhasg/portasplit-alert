@@ -8,8 +8,6 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-  - cron: "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
 
 concurrency:
   group: portasplit-stock-check
@@ -24,10 +22,12 @@ jobs:
       - name: Récupérer les fichiers
         uses: actions/checkout@v4
 
-      - name: Restaurer l’état précédent
+      - name: Restaurer l’état et l’historique
         uses: actions/cache/restore@v4
         with:
-          path: state.json
+          path: |
+            state.json
+            stock-history.csv
           key: portasplit-state-${{ github.run_id }}
           restore-keys: |
             portasplit-state-
@@ -57,14 +57,16 @@ jobs:
           TEST_NOTIFICATION: ${{ inputs.test_notification || 'false' }}
         run: python monitor.py
 
-      - name: Sauvegarder le nouvel état
+      - name: Sauvegarder l’état et l’historique
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: state.json
+          path: |
+            state.json
+            stock-history.csv
           key: portasplit-state-${{ github.run_id }}
 
-      - name: Conserver le diagnostic
+      - name: Conserver le diagnostic et l’historique
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -72,5 +74,6 @@ jobs:
           path: |
             latest-results.json
             state.json
-          retention-days: 3
+            stock-history.csv
+          retention-days: 30
           if-no-files-found: ignore
